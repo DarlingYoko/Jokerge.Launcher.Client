@@ -43,7 +43,7 @@ public class WhiteListFolderDecorator : IFileUpdateHandler
     {
         return !profileInfo.WhiteListFolders.Any(folder =>
             SystemIoProcedures.NormalizePath(file.Directory).StartsWith(
-                SystemIoProcedures.NormalizePath(Path.Combine(profileInfo.ReleativePath, folder.Path)),
+                SystemIoProcedures.NormalizePath(folder.Path),
                 StringComparison.OrdinalIgnoreCase));
     }
 

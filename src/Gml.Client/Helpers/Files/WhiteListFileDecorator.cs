@@ -2,7 +2,6 @@
 using System;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Gml.Dto.Files;
 using Gml.Dto.Profile;
@@ -28,15 +27,6 @@ public class WhiteListFileDecorator : IFileUpdateHandler
         return result;
     }
 
-    private bool FileExists(ProfileFileReadDto file, string rootDirectory)
-    {
-        var fullName = Path.Combine(rootDirectory, SystemIoProcedures.NormalizePath(file.Directory));
-        // Для опциональных модов файл может быть сохранен с суффиксом ".disabled"
-        if (File.Exists(fullName)) return true;
-        var disabledPath = fullName + ".disabled";
-        return File.Exists(disabledPath);
-    }
-
     private static bool ExistsInWhiteList(ProfileReadInfoDto profileInfo, ProfileFileReadDto file)
     {
         return profileInfo.WhiteListFiles.Any(w =>
@@ -45,29 +35,16 @@ public class WhiteListFileDecorator : IFileUpdateHandler
                 StringComparison.OrdinalIgnoreCase));
     }
 
-    private bool ShouldKeepForUpdate(ProfileReadInfoDto profileInfo, ProfileFileReadDto file, string rootDirectory)
+    private static bool ShouldKeepForUpdate(ProfileReadInfoDto profileInfo, ProfileFileReadDto file, string rootDirectory)
     {
-        var inWhiteList = ExistsInWhiteList(profileInfo, file);
         var fullPath = Path.Combine(rootDirectory, SystemIoProcedures.NormalizePath(file.Directory));
-
         var exists = File.Exists(fullPath) || File.Exists(fullPath + ".disabled");
+
+        // Missing locally -> download.
         if (!exists) return true;
 
-        if (!inWhiteList) return true;
-
-        if (string.IsNullOrWhiteSpace(file.Hash)) return false;
-
-        var actualLocalPath = File.Exists(fullPath) ? fullPath : fullPath + ".disabled";
-
-        try
-        {
-            using var algorithm = SHA1.Create();
-            var localHash = SystemHelper.CalculateFileHash(actualLocalPath, algorithm);
-            return !string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return true;
-        }
+        // Exists and whitelisted -> never touch.
+        // Exists and not whitelisted -> keep whatever the upstream handlers already decided (re-download).
+        return !ExistsInWhiteList(profileInfo, file);
     }
 }
