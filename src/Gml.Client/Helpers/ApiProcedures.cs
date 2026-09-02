@@ -34,6 +34,10 @@ namespace Gml.Client.Helpers;
 
 public class ApiProcedures
 {
+    // Must match AuthIntegrationHandler's header name in Jokerge.Api — signals "2FA code required"
+    // without relying on matching the (localized) error message text.
+    private const string TwoFactorRequiredHeader = "X-Requires-2FA";
+
     private readonly Dictionary<string, List<ProfileFileWatcher>> _fileWatchers = new();
     private readonly HttpClient _httpClient;
     private readonly ISubject<int> _loadedFilesCount = new Subject<int>();
@@ -52,6 +56,10 @@ public class ApiProcedures
     {
         _httpClient = httpClient;
         _osType = osType;
+
+        // The default 100s HttpClient timeout left auth calls (login, token check) spinning
+        // with no user feedback whenever the backend was slow or unreachable.
+        _httpClient.Timeout = TimeSpan.FromSeconds(20);
 
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
             $"Gml.Launcher-Client-{nameof(GmlClientManager)}/1.0 " +
@@ -380,7 +388,6 @@ public class ApiProcedures
 
         var data = new StringContent(model, Encoding.UTF8, "application/json");
         var response = await _httpClient.PostAsync("/api/v1/integrations/auth/checkToken", data).ConfigureAwait(false);
-        _httpClient.DefaultRequestHeaders.Remove("X-HWID");
         authUser.IsAuth = response.IsSuccessStatusCode;
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -392,7 +399,7 @@ public class ApiProcedures
             authUser.Uuid = dto.Data!.Uuid;
             authUser.Name = dto.Data.Name;
             authUser.AccessToken = dto.Data!.AccessToken;
-            authUser.Has2Fa = false; //dto.Data!.Has2Fa;
+            authUser.Has2Fa = false;
             authUser.ExpiredDate = dto.Data!.ExpiredDate;
             authUser.TextureUrl = dto.Data.TextureSkinUrl;
 
@@ -402,7 +409,7 @@ public class ApiProcedures
             return (authUser, string.Empty, Enumerable.Empty<string>());
         }
 
-        if(dto is not null && dto.Message.Contains("2FA"))
+        if (response.Headers.Contains(TwoFactorRequiredHeader))
         {
             authUser.Has2Fa = true;
         }
@@ -433,9 +440,15 @@ public class ApiProcedures
         };
 
         var data = new StringContent(model, Encoding.UTF8, "application/json");
-        _httpClient.DefaultRequestHeaders.Add("X-HWID", hwid);
-        var response = await _httpClient.PostAsync("/api/v1/integrations/auth/signin", data).ConfigureAwait(false);
-        _httpClient.DefaultRequestHeaders.Remove("X-HWID");
+        // Set X-HWID on this request only — mutating _httpClient.DefaultRequestHeaders here raced with
+        // other concurrent requests on the shared client (e.g. splash-screen token validation), which
+        // could strip or duplicate the header mid-flight and cause intermittent HWID-rejection failures.
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/integrations/auth/signin")
+        {
+            Content = data
+        };
+        request.Headers.Add("X-HWID", hwid);
+        var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
         authUser.IsAuth = response.IsSuccessStatusCode;
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -457,7 +470,7 @@ public class ApiProcedures
             return (authUser, string.Empty, []);
         }
 
-        if(dto is not null && dto.Message.Contains("2FA"))
+        if (response.Headers.Contains(TwoFactorRequiredHeader))
         {
             authUser.Has2Fa = true;
         }
@@ -918,7 +931,9 @@ public class ApiProcedures
 #if DEBUG
         Debug.WriteLine("Calling CheckBackend()");
 #endif
-        using var client = new HttpClient();
+        // Bounded so an unreachable/slow backend can't stall app startup for the default 100s
+        // HttpClient timeout — this runs synchronously (via .Result) before the main window appears.
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         var response = await client.GetAsync($"{hostUrl}").ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
