@@ -52,14 +52,24 @@ public class ApiProcedures
 
     private int _progressFilesCount;
 
+    // Scoped to individual auth calls (not the shared HttpClient.Timeout) so slow/large file
+    // downloads on the same HttpClient are never aborted mid-stream by an auth-oriented timeout.
+    private static readonly TimeSpan AuthCallTimeout = TimeSpan.FromSeconds(20);
+
+    // Inactivity timeout for a single file download — reset on every chunk received, so it only
+    // trips when a transfer truly stalls (not merely slow). See DownloadFile for how it's used.
+    private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromSeconds(30);
+
     public ApiProcedures(HttpClient httpClient, OsType osType)
     {
         _httpClient = httpClient;
         _osType = osType;
 
-        // The default 100s HttpClient timeout left auth calls (login, token check) spinning
-        // with no user feedback whenever the backend was slow or unreachable.
-        _httpClient.Timeout = TimeSpan.FromSeconds(20);
+        // HttpClient.Timeout bounds the *entire* request, including streaming the response body,
+        // and this HttpClient is shared with file downloads — capping it here previously made any
+        // Minecraft file that took longer than the cap to download abort mid-stream. Auth calls get
+        // their own short-lived cancellation (see AuthCallTimeout) instead of a client-wide timeout.
+        _httpClient.Timeout = Timeout.InfiniteTimeSpan;
 
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
             $"Gml.Launcher-Client-{nameof(GmlClientManager)}/1.0 " +
@@ -387,7 +397,8 @@ public class ApiProcedures
         var authUser = new AuthLauncherUser();
 
         var data = new StringContent(model, Encoding.UTF8, "application/json");
-        var response = await _httpClient.PostAsync("/api/v1/integrations/auth/checkToken", data).ConfigureAwait(false);
+        using var timeoutCts = new CancellationTokenSource(AuthCallTimeout);
+        var response = await _httpClient.PostAsync("/api/v1/integrations/auth/checkToken", data, timeoutCts.Token).ConfigureAwait(false);
         authUser.IsAuth = response.IsSuccessStatusCode;
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -448,7 +459,8 @@ public class ApiProcedures
             Content = data
         };
         request.Headers.Add("X-HWID", hwid);
-        var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
+        using var timeoutCts = new CancellationTokenSource(AuthCallTimeout);
+        var response = await _httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
         authUser.IsAuth = response.IsSuccessStatusCode;
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -505,8 +517,10 @@ public class ApiProcedures
     private async Task DownloadFileWithRetry(string installationDirectory, ProfileFileReadDto file,
         SemaphoreSlim throttler, CancellationToken cancellationToken = default)
     {
-        // Try to download file up to 5 times
-        for (var attempt = 1; attempt <= 5; attempt++)
+        const int maxAttempts = 5;
+
+        // Try to download file up to maxAttempts times
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
             try
             {
                 await DownloadFile(installationDirectory, file, throttler, cancellationToken);
@@ -524,8 +538,10 @@ public class ApiProcedures
 #if DEBUG
                 Debug.WriteLine($"Exception on attempt {attempt}: {ex.Message}");
 #endif
-                if (attempt == 3)
+                if (attempt == maxAttempts)
                     throw;
+
+                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
             }
     }
 
@@ -574,16 +590,25 @@ public class ApiProcedures
 
             var url = $"{_httpClient.BaseAddress.AbsoluteUri}api/v1/file/{file.Hash}";
 
+            // The HttpClient has no overall Timeout (large files can legitimately take a while), so
+            // without this a connection silently dropped by an intermediary would hang until the
+            // OS-level TCP timeout (multiple minutes) instead of failing fast into a retry. This timer
+            // is reset on every chunk of progress, so it only trips when the transfer truly stalls.
+            using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            stallCts.CancelAfter(DownloadStallTimeout);
+
             await using (var fs = new FileStream(localPath, FileMode.Create))
             {
-                using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+                using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, stallCts.Token))
                 {
                     response.EnsureSuccessStatusCode();
+                    stallCts.CancelAfter(DownloadStallTimeout);
                     using var stream = await response.Content.ReadAsStreamAsync();
                     var buffer = new byte[81920];
                     int read;
-                    while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
+                    while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, stallCts.Token)) > 0)
                     {
+                        stallCts.CancelAfter(DownloadStallTimeout);
                         await fs.WriteAsync(buffer, 0, read, cancellationToken);
                         _downloadedBytesDelta.OnNext(read);
                     }

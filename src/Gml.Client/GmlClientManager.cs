@@ -29,6 +29,11 @@ namespace Gml.Client;
 
 public class GmlClientManager : IGmlClientManager
 {
+    // The backend's file-download endpoint bounds concurrent in-flight downloads per client IP
+    // (see Jokerge.Api's DownloadPolicy rate limiter); staying well under that budget leaves
+    // headroom for other players behind the same NAT/IP and avoids saturating the connection pool.
+    private const int MaxConcurrentDownloads = 16;
+
     private readonly ApiProcedures _apiProcedures;
     private readonly ISubject<int> _loadedFilesCount = new Subject<int>();
     private readonly ISubject<int> _maxFileCount = new Subject<int>();
@@ -53,10 +58,30 @@ public class GmlClientManager : IGmlClientManager
         _osType = osType;
         _systemProcedures = new SystemIoProcedures(installationDirectory, osType);
         _offlineProfilesDirectory = Path.Combine(InstallationDirectory, "offline-mode");
-        _apiProcedures = new ApiProcedures(new HttpClient
+
+#if NET8_0_OR_GREATER
+        // Without this, pooled connections are reused indefinitely as long as they *look* alive.
+        // An intermediary (reverse proxy, NAT, firewall) that silently drops an idle connection
+        // leaves the client holding a "dead" connection it doesn't know is dead — the next request
+        // sent over it gets no response and, with no client-side timeout, hangs until the OS-level
+        // TCP timeout (multiple minutes) fires. Recycling connections periodically keeps this rare.
+        // (SocketsHttpHandler isn't part of the netstandard2.1 reference surface, hence the #if.)
+        var httpClient = new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60)
+        })
         {
             BaseAddress = HostUri
-        }, osType);
+        };
+#else
+        var httpClient = new HttpClient
+        {
+            BaseAddress = HostUri
+        };
+#endif
+
+        _apiProcedures = new ApiProcedures(httpClient, osType);
 
         _apiProcedures.ProgressChanged.Subscribe(_progressChanged);
         _apiProcedures.LoadedFilesCount.Subscribe(_loadedFilesCount);
@@ -270,7 +295,7 @@ public class GmlClientManager : IGmlClientManager
         var validateResult = await _systemProcedures.ValidateFilesAsync(profileInfo, InstallationDirectory);
 
         await _systemProcedures.RemoveFiles(InstallationDirectory, validateResult.ToDelete);
-        await _apiProcedures.DownloadFiles(InstallationDirectory, validateResult.ToUpdate, 60, cancellationToken);
+        await _apiProcedures.DownloadFiles(InstallationDirectory, validateResult.ToUpdate, MaxConcurrentDownloads, cancellationToken);
     }
 
     private Task ValidateFilesBeforeInstall(ProfileReadInfoDto profileInfo)
@@ -288,7 +313,7 @@ public class GmlClientManager : IGmlClientManager
     public async Task DownloadFiles(ProfileFileReadDto[] profileInfo,
         CancellationToken cancellationToken = default)
     {
-        await _apiProcedures.DownloadFiles(InstallationDirectory, profileInfo.ToArray(), 60, cancellationToken);
+        await _apiProcedures.DownloadFiles(InstallationDirectory, profileInfo.ToArray(), MaxConcurrentDownloads, cancellationToken);
     }
 
     public Task<(ILauncherUser User, string Message, IEnumerable<string> Details)> Auth(string login, string password,
