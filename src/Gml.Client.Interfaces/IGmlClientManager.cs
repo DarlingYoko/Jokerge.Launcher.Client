@@ -15,6 +15,7 @@ public interface IGmlClientManager : IDisposable
 {
     IObservable<int> ProgressChanged { get; }
     IObservable<bool> ProfilesChanges { get; }
+    IObservable<FileSyncResult> FilesSynced { get; }
     public string ProjectName { get; }
     IObservable<int> MaxFileCount { get; }
     IObservable<int> LoadedFilesCount { get; }

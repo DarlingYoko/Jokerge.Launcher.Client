@@ -40,6 +40,7 @@ public class GmlClientManager : IGmlClientManager
     private readonly OsType _osType;
     private readonly ISubject<bool> _profilesChanged = new Subject<bool>();
     private readonly ISubject<int> _progressChanged = new Subject<int>();
+    private readonly ISubject<FileSyncResult> _filesSynced = new Subject<FileSyncResult>();
     private readonly string _webSocketAddress;
     private readonly string _offlineProfilesDirectory;
 
@@ -100,6 +101,7 @@ public class GmlClientManager : IGmlClientManager
 
     IObservable<int> IGmlClientManager.ProgressChanged => _progressChanged;
     public IObservable<bool> ProfilesChanges => _profilesChanged;
+    public IObservable<FileSyncResult> FilesSynced => _filesSynced;
     public IObservable<int> MaxFileCount => _maxFileCount;
     public IObservable<int> LoadedFilesCount => _loadedFilesCount;
     public IObservable<long> DownloadedBytesDelta => _apiProcedures.DownloadedBytesDelta;
@@ -296,6 +298,8 @@ public class GmlClientManager : IGmlClientManager
 
         await _systemProcedures.RemoveFiles(InstallationDirectory, validateResult.ToDelete);
         await _apiProcedures.DownloadFiles(InstallationDirectory, validateResult.ToUpdate, MaxConcurrentDownloads, cancellationToken);
+
+        _filesSynced.OnNext(new FileSyncResult(validateResult.ToUpdate, validateResult.ToDelete));
     }
 
     private Task ValidateFilesBeforeInstall(ProfileReadInfoDto profileInfo)
