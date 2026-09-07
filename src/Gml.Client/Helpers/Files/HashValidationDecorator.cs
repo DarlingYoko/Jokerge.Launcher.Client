@@ -28,10 +28,13 @@ public class HashValidationDecorator : IFileUpdateHandler
             )
         );
         var files = result.FilesToUpdate.ToList();
+        var hashCache = FileHashCache.Load(rootDirectory);
 
-        await Task.WhenAll(files.Select(async serverFile =>
+        // Runs on a pool thread: the body below is fully synchronous (blocking file I/O + SHA1),
+        // so Parallel.ForEach gives real multi-core parallelism instead of the single-threaded
+        // execution you'd get from `Task.WhenAll` over async lambdas with no actual awaits inside.
+        await Task.Run(() => Parallel.ForEach(files, serverFile =>
         {
-
             filesToDelete.TryGetValue(SystemIoProcedures.NormalizePath(serverFile.Directory), out var localFile);
 
             if (localFile is null)
@@ -69,10 +72,28 @@ public class HashValidationDecorator : IFileUpdateHandler
             else if (localFile.Size == serverFile.Size)
             {
                 // Размеры совпадают - проверяем хеш
-                using var algorithm = SHA1.Create();
-                var localPath = Path.Combine(rootDirectory, SystemIoProcedures.NormalizePath(serverFile.Directory));
-                if (!localPath.StartsWith(Path.Combine(rootDirectory, "assets")) &&
-                    SystemHelper.CalculateFileHash(localPath, algorithm) != serverFile.Hash)
+                var normalizedDirectory = SystemIoProcedures.NormalizePath(serverFile.Directory);
+                var localPath = Path.Combine(rootDirectory, normalizedDirectory);
+                var skipHashCheck = localPath.StartsWith(Path.Combine(rootDirectory, "assets"));
+
+                var hashMatches = true;
+
+                if (!skipHashCheck)
+                {
+                    var fileInfo = new FileInfo(localPath);
+
+                    if (!hashCache.TryGetHash(normalizedDirectory, fileInfo.Length, fileInfo.LastWriteTimeUtc,
+                            out var hash))
+                    {
+                        using var algorithm = SHA1.Create();
+                        hash = SystemHelper.CalculateFileHash(localPath, algorithm);
+                        hashCache.SetHash(normalizedDirectory, fileInfo.Length, fileInfo.LastWriteTimeUtc, hash);
+                    }
+
+                    hashMatches = hash == serverFile.Hash;
+                }
+
+                if (!hashMatches)
                 {
                     filesToUpdate.Add(serverFile);
                     filesToDelete.TryRemove(SystemIoProcedures.NormalizePath(localFile.Directory), out _);
@@ -90,6 +111,8 @@ public class HashValidationDecorator : IFileUpdateHandler
                 filesToDelete.TryRemove(SystemIoProcedures.NormalizePath(localFile.Directory), out _);
             }
         }));
+
+        hashCache.Save();
 
         result.FilesToUpdate = filesToUpdate;
         result.FilesToDelete = filesToDelete.Values;
