@@ -40,6 +40,7 @@ public class ApiProcedures
 
     private readonly Dictionary<string, List<ProfileFileWatcher>> _fileWatchers = new();
     private readonly HttpClient _httpClient;
+    private readonly HttpClient _downloadHttpClient;
     private readonly ISubject<int> _loadedFilesCount = new Subject<int>();
     private readonly ISubject<int> _maxFileCount = new Subject<int>();
     private readonly OsType _osType;
@@ -61,13 +62,27 @@ public class ApiProcedures
         // with no user feedback whenever the backend was slow or unreachable.
         _httpClient.Timeout = TimeSpan.FromSeconds(20);
 
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+        var userAgent =
             $"Gml.Launcher-Client-{nameof(GmlClientManager)}/1.0 " +
             $"(OS: {RuntimeInformation.OSDescription.Replace(";", ",")}; " +
             $"OSArchitecture: {RuntimeInformation.OSArchitecture}; " +
             $"ProcessArchitecture: {RuntimeInformation.ProcessArchitecture}; " +
             $"FrameworkDescription: {RuntimeInformation.FrameworkDescription.Replace(";", ",")}; " +
-            $".NET: {Environment.Version.ToString(3)};)");
+            $".NET: {Environment.Version.ToString(3)};)";
+
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
+
+        // HttpClient.Timeout bounds the whole request/response lifetime, including reading
+        // the response stream after headers arrive — even with ResponseHeadersRead. Sharing
+        // _httpClient's 20s auth-call timeout would abort any file/launcher download slower
+        // than 20s total, which is routine for large modpacks or slow connections. Downloads
+        // get their own client with no client-wide timeout instead.
+        _downloadHttpClient = new HttpClient
+        {
+            BaseAddress = httpClient.BaseAddress,
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
+        };
+        _downloadHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
     }
 
     public IObservable<int> ProgressChanged => _progressChanged;
@@ -116,9 +131,12 @@ public class ApiProcedures
         {
             try
             {
-                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                // Authorization set on this request only — mutating _httpClient.DefaultRequestHeaders
+                // here races with every other concurrent call sharing the same HttpClient.
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/profiles");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-                var response = await _httpClient.GetAsync("/api/v1/profiles").ConfigureAwait(false);
+                var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
                 Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
@@ -534,9 +552,9 @@ public class ApiProcedures
 #if DEBUG
         Debug.WriteLine($"Calling GetNewLauncher for guid: {guid}");
 #endif
-        var url = $"{_httpClient.BaseAddress.AbsoluteUri}api/v1/file/{guid}";
+        var url = $"{_downloadHttpClient.BaseAddress.AbsoluteUri}api/v1/file/{guid}";
 
-        var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+        var response = await _downloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -572,11 +590,11 @@ public class ApiProcedures
                 localPath = ToggleOptionalMod(localPath);
             }
 
-            var url = $"{_httpClient.BaseAddress.AbsoluteUri}api/v1/file/{file.Hash}";
+            var url = $"{_downloadHttpClient.BaseAddress.AbsoluteUri}api/v1/file/{file.Hash}";
 
             await using (var fs = new FileStream(localPath, FileMode.Create))
             {
-                using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+                using (var response = await _downloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
                 {
                     response.EnsureSuccessStatusCode();
                     using var stream = await response.Content.ReadAsStreamAsync();
@@ -846,12 +864,12 @@ public class ApiProcedures
         Debug.WriteLine("Calling GetOptionalMods()");
 #endif
         Debug.Write("Load profiles: ");
-        if (_httpClient.DefaultRequestHeaders.TryGetValues("Authorization", out _))
-            _httpClient.DefaultRequestHeaders.Remove("Authorization");
+        // Authorization set on this request only — mutating _httpClient.DefaultRequestHeaders
+        // here races with every other concurrent call sharing the same HttpClient.
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/mods/details");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
-
-        var response = await _httpClient.GetAsync("/api/v1/mods/details").ConfigureAwait(false);
+        var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
@@ -874,13 +892,12 @@ public class ApiProcedures
         Debug.WriteLine("Calling GetOptionalMods()");
 #endif
         Debug.Write("Load profiles: ");
-        if (_httpClient.DefaultRequestHeaders.TryGetValues("Authorization", out _))
-            _httpClient.DefaultRequestHeaders.Remove("Authorization");
+        // Authorization set on this request only — mutating _httpClient.DefaultRequestHeaders
+        // here races with every other concurrent call sharing the same HttpClient.
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/profiles/{profileName}/mods/optionals");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
-
-        var response = await _httpClient.GetAsync($"/api/v1/profiles/{profileName}/mods/optionals")
-            .ConfigureAwait(false);
+        var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
