@@ -11,54 +11,51 @@ public class LauncherUpdater
         Start(osType, newFileName, true);
     }
 
-    private static void ExecuteCommand(string command, OsType osType, string? workingDirectory = null)
+    // Runs fileName directly via the process API (no cmd.exe/bash -c involved), so a
+    // filename or argument containing shell metacharacters can't inject extra commands —
+    // fileName comes from the update package name, which round-trips through the update
+    // server.
+    private static void ExecuteProcess(string fileName, string[] arguments, string? workingDirectory = null)
     {
-        ProcessStartInfo processInfo;
-        if (osType == OsType.Windows)
-            processInfo = new ProcessStartInfo("cmd.exe", $"/C {command}")
-            {
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-        else
-            processInfo = new ProcessStartInfo("bash", $"-c \"{command}\"")
-            {
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-        if (workingDirectory is not null) processInfo.WorkingDirectory = workingDirectory;
-        using (var process = Process.Start(processInfo))
+        var processInfo = new ProcessStartInfo(fileName)
         {
-            process.WaitForExit();
-            var output = process.StandardOutput.ReadToEnd();
-            var error = process.StandardError.ReadToEnd();
-            if (process.ExitCode != 0) throw new Exception($"Command '{command}' failed with error: {error}");
-        }
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in arguments) processInfo.ArgumentList.Add(argument);
+        if (workingDirectory is not null) processInfo.WorkingDirectory = workingDirectory;
+
+        using var process = Process.Start(processInfo);
+        process.WaitForExit();
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        if (process.ExitCode != 0) throw new Exception($"Command '{fileName}' failed with error: {error}");
     }
 
     public static void Start(OsType osType, string fileName, bool skipUpdate = false)
     {
-        var arguments = skipUpdate ? "-skip-update" : string.Empty;
+        var arguments = skipUpdate ? new[] { "-skip-update" } : Array.Empty<string>();
 
         switch (osType)
         {
             case OsType.Linux:
             case OsType.OsX:
-                ExecuteCommand($"chmod +x \"{fileName}\"", osType);
-                ExecuteCommand($"./{fileName} {arguments}", osType);
+                ExecuteProcess("chmod", new[] { "+x", fileName });
+                ExecuteProcess($"./{fileName}", arguments);
                 break;
             case OsType.Windows:
-                Process.Start(new ProcessStartInfo
+            {
+                var processInfo = new ProcessStartInfo
                 {
                     FileName = fileName,
-                    Arguments = arguments,
                     UseShellExecute = true
-                });
+                };
+                foreach (var argument in arguments) processInfo.ArgumentList.Add(argument);
+                Process.Start(processInfo);
                 break;
+            }
             case OsType.Undefined:
             default:
                 throw new ArgumentOutOfRangeException(nameof(osType), osType, null);

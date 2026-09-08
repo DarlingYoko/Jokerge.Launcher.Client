@@ -311,11 +311,11 @@ public class ApiProcedures
                 break;
             case OsType.Linux:
             case OsType.OsX:
-                var chmodStartInfo = new ProcessStartInfo
-                {
-                    FileName = "/bin/bash",
-                    Arguments = $"-c \"chmod +x '{startInfoFileName}\"'"
-                };
+                // chmod invoked directly (no shell), so startInfoFileName can't inject
+                // extra commands regardless of quotes/spaces/metacharacters it contains.
+                var chmodStartInfo = new ProcessStartInfo("chmod");
+                chmodStartInfo.ArgumentList.Add("+x");
+                chmodStartInfo.ArgumentList.Add(startInfoFileName);
                 Process.Start(chmodStartInfo);
                 break;
             case OsType.Windows:
