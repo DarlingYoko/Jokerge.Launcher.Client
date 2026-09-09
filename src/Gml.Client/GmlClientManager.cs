@@ -13,6 +13,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Reactive.Subjects;
+using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -202,8 +203,19 @@ public class GmlClientManager : IGmlClientManager
 
         if (tempFile.Exists)
         {
-            LauncherUpdater.Start(osType, tempFile.FullName, true);
-            return;
+            var cachedHash = versionInfo.ActualVersion is null
+                ? null
+                : _apiProcedures.GetKnownSha256(versionInfo.ActualVersion.Guid);
+
+            if (IsFileHashValid(tempFile.FullName, cachedHash))
+            {
+                LauncherUpdater.Start(osType, tempFile.FullName, true);
+                return;
+            }
+
+            // Stale, corrupt, or tampered leftover from a previous run — delete it and fall
+            // through to a fresh download instead of running an unverified binary.
+            tempFile.Delete();
         }
 
         if (!tempFile.Directory!.Exists) tempFile.Directory.Create();
@@ -220,7 +232,30 @@ public class GmlClientManager : IGmlClientManager
 
         _progressChanged.OnNext(100);
         fs.Close();
+
+        var downloadedHash = _apiProcedures.GetKnownSha256(versionInfo.ActualVersion.Guid);
+
+        if (!IsFileHashValid(tempFile.FullName, downloadedHash))
+        {
+            tempFile.Delete();
+            throw new InvalidOperationException(
+                "Downloaded launcher update failed SHA-256 verification against the server-reported hash; aborting update.");
+        }
+
         LauncherUpdater.FileReplaceAndRestart(osType, tempFile.FullName, originalFileName);
+    }
+
+    // Server versions created before IVersionFile.Sha256 existed won't have a hash to check
+    // against — skip verification rather than block updates, same trust level as before this
+    // check existed.
+    private static bool IsFileHashValid(string filePath, string? expectedSha256)
+    {
+        if (string.IsNullOrEmpty(expectedSha256)) return true;
+
+        using var sha256 = SHA256.Create();
+        var actualSha256 = SystemHelper.CalculateFileHash(filePath, sha256);
+
+        return string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase);
     }
 
     public Task<ResponseMessage<ProfileReadInfoDto?>?> GetProfileInfo(ProfileCreateInfoDto profileDto)

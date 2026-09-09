@@ -28,6 +28,7 @@ using Gml.Web.Api.Domains.System;
 using GmlCore.Interfaces.Storage;
 using GmlCore.Interfaces.User;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Sentry;
 
 namespace Gml.Client.Helpers;
@@ -41,6 +42,12 @@ public class ApiProcedures
     private readonly Dictionary<string, List<ProfileFileWatcher>> _fileWatchers = new();
     private readonly HttpClient _httpClient;
     private readonly HttpClient _downloadHttpClient;
+
+    // LauncherVersion (from the published Gml.Dto package this project references) doesn't
+    // expose a Sha256 property yet, so GetActualVersion pulls it out of the raw JSON
+    // separately and caches it here by Guid for UpdateCurrentLauncher to consult. Keeps the
+    // self-update integrity check working without waiting on a new Gml.Dto package release.
+    private readonly Dictionary<string, string?> _versionHashesByGuid = new();
     private readonly ISubject<int> _loadedFilesCount = new Subject<int>();
     private readonly ISubject<int> _maxFileCount = new Subject<int>();
     private readonly OsType _osType;
@@ -807,7 +814,8 @@ public class ApiProcedures
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-        var result = JsonConvert.DeserializeObject<ResponseMessage<Dictionary<string, LauncherVersion?>?>>(content);
+        var jObject = JObject.Parse(content);
+        var result = jObject.ToObject<ResponseMessage<Dictionary<string, LauncherVersion?>?>>();
 
         if (result?.Data is null || result?.Data.Count == 0)
         {
@@ -819,10 +827,27 @@ public class ApiProcedures
 
         var osName = GetOsName(osType, osArch);
 
+        var version = result!.Data.FirstOrDefault(c => c.Key == osName).Value;
+
+        if (version is not null && !string.IsNullOrEmpty(version.Value.Guid))
+        {
+            var sha256 = jObject["data"]?[osName]?["sha256"]?.Value<string>();
+            _versionHashesByGuid[version.Value.Guid] = sha256;
+        }
+
 #if DEBUG
         Debug.WriteLine("Actual version retrieved successfully.");
 #endif
-        return result!.Data.FirstOrDefault(c => c.Key == osName).Value;
+        return version;
+    }
+
+    /// <summary>
+    /// The SHA-256 the server reported for this version's Guid, captured by the most recent
+    /// GetActualVersion call. Null if unknown (older server, or GetActualVersion wasn't called).
+    /// </summary>
+    public string? GetKnownSha256(string guid)
+    {
+        return _versionHashesByGuid.TryGetValue(guid, out var hash) ? hash : null;
     }
 
     private string GetOsName(OsType osType, Architecture osArch)
