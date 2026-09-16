@@ -28,6 +28,7 @@ using Gml.Web.Api.Domains.System;
 using GmlCore.Interfaces.Storage;
 using GmlCore.Interfaces.User;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Sentry;
 
 namespace Gml.Client.Helpers;
@@ -40,6 +41,13 @@ public class ApiProcedures
 
     private readonly Dictionary<string, List<ProfileFileWatcher>> _fileWatchers = new();
     private readonly HttpClient _httpClient;
+    private readonly HttpClient _downloadHttpClient;
+
+    // LauncherVersion (from the published Gml.Dto package this project references) doesn't
+    // expose a Sha256 property yet, so GetActualVersion pulls it out of the raw JSON
+    // separately and caches it here by Guid for UpdateCurrentLauncher to consult. Keeps the
+    // self-update integrity check working without waiting on a new Gml.Dto package release.
+    private readonly Dictionary<string, string?> _versionHashesByGuid = new();
     private readonly ISubject<int> _loadedFilesCount = new Subject<int>();
     private readonly ISubject<int> _maxFileCount = new Subject<int>();
     private readonly OsType _osType;
@@ -71,13 +79,27 @@ public class ApiProcedures
         // their own short-lived cancellation (see AuthCallTimeout) instead of a client-wide timeout.
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
 
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+        var userAgent =
             $"Gml.Launcher-Client-{nameof(GmlClientManager)}/1.0 " +
             $"(OS: {RuntimeInformation.OSDescription.Replace(";", ",")}; " +
             $"OSArchitecture: {RuntimeInformation.OSArchitecture}; " +
             $"ProcessArchitecture: {RuntimeInformation.ProcessArchitecture}; " +
             $"FrameworkDescription: {RuntimeInformation.FrameworkDescription.Replace(";", ",")}; " +
-            $".NET: {Environment.Version.ToString(3)};)");
+            $".NET: {Environment.Version.ToString(3)};)";
+
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
+
+        // HttpClient.Timeout bounds the whole request/response lifetime, including reading
+        // the response stream after headers arrive — even with ResponseHeadersRead. Sharing
+        // _httpClient's 20s auth-call timeout would abort any file/launcher download slower
+        // than 20s total, which is routine for large modpacks or slow connections. Downloads
+        // get their own client with no client-wide timeout instead.
+        _downloadHttpClient = new HttpClient
+        {
+            BaseAddress = httpClient.BaseAddress,
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
+        };
+        _downloadHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(userAgent);
     }
 
     public IObservable<int> ProgressChanged => _progressChanged;
@@ -126,9 +148,12 @@ public class ApiProcedures
         {
             try
             {
-                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                // Authorization set on this request only — mutating _httpClient.DefaultRequestHeaders
+                // here races with every other concurrent call sharing the same HttpClient.
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/profiles");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-                var response = await _httpClient.GetAsync("/api/v1/profiles").ConfigureAwait(false);
+                var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
                 Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
@@ -303,11 +328,11 @@ public class ApiProcedures
                 break;
             case OsType.Linux:
             case OsType.OsX:
-                var chmodStartInfo = new ProcessStartInfo
-                {
-                    FileName = "/bin/bash",
-                    Arguments = $"-c \"chmod +x '{startInfoFileName}\"'"
-                };
+                // chmod invoked directly (no shell), so startInfoFileName can't inject
+                // extra commands regardless of quotes/spaces/metacharacters it contains.
+                var chmodStartInfo = new ProcessStartInfo("chmod");
+                chmodStartInfo.ArgumentList.Add("+x");
+                chmodStartInfo.ArgumentList.Add(startInfoFileName);
                 Process.Start(chmodStartInfo);
                 break;
             case OsType.Windows:
@@ -550,9 +575,9 @@ public class ApiProcedures
 #if DEBUG
         Debug.WriteLine($"Calling GetNewLauncher for guid: {guid}");
 #endif
-        var url = $"{_httpClient.BaseAddress.AbsoluteUri}api/v1/file/{guid}";
+        var url = $"{_downloadHttpClient.BaseAddress.AbsoluteUri}api/v1/file/{guid}";
 
-        var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+        var response = await _downloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -588,7 +613,7 @@ public class ApiProcedures
                 localPath = ToggleOptionalMod(localPath);
             }
 
-            var url = $"{_httpClient.BaseAddress.AbsoluteUri}api/v1/file/{file.Hash}";
+            var url = $"{_downloadHttpClient.BaseAddress.AbsoluteUri}api/v1/file/{file.Hash}";
 
             // The HttpClient has no overall Timeout (large files can legitimately take a while), so
             // without this a connection silently dropped by an intermediary would hang until the
@@ -599,7 +624,7 @@ public class ApiProcedures
 
             await using (var fs = new FileStream(localPath, FileMode.Create))
             {
-                using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, stallCts.Token))
+                using (var response = await _downloadHttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, stallCts.Token))
                 {
                     response.EnsureSuccessStatusCode();
                     stallCts.CancelAfter(DownloadStallTimeout);
@@ -814,7 +839,8 @@ public class ApiProcedures
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-        var result = JsonConvert.DeserializeObject<ResponseMessage<Dictionary<string, LauncherVersion?>?>>(content);
+        var jObject = JObject.Parse(content);
+        var result = jObject.ToObject<ResponseMessage<Dictionary<string, LauncherVersion?>?>>();
 
         if (result?.Data is null || result?.Data.Count == 0)
         {
@@ -826,10 +852,27 @@ public class ApiProcedures
 
         var osName = GetOsName(osType, osArch);
 
+        var version = result!.Data.FirstOrDefault(c => c.Key == osName).Value;
+
+        if (version is not null && !string.IsNullOrEmpty(version.Value.Guid))
+        {
+            var sha256 = jObject["data"]?[osName]?["sha256"]?.Value<string>();
+            _versionHashesByGuid[version.Value.Guid] = sha256;
+        }
+
 #if DEBUG
         Debug.WriteLine("Actual version retrieved successfully.");
 #endif
-        return result!.Data.FirstOrDefault(c => c.Key == osName).Value;
+        return version;
+    }
+
+    /// <summary>
+    /// The SHA-256 the server reported for this version's Guid, captured by the most recent
+    /// GetActualVersion call. Null if unknown (older server, or GetActualVersion wasn't called).
+    /// </summary>
+    public string? GetKnownSha256(string guid)
+    {
+        return _versionHashesByGuid.TryGetValue(guid, out var hash) ? hash : null;
     }
 
     private string GetOsName(OsType osType, Architecture osArch)
@@ -871,12 +914,12 @@ public class ApiProcedures
         Debug.WriteLine("Calling GetOptionalMods()");
 #endif
         Debug.Write("Load profiles: ");
-        if (_httpClient.DefaultRequestHeaders.TryGetValues("Authorization", out _))
-            _httpClient.DefaultRequestHeaders.Remove("Authorization");
+        // Authorization set on this request only — mutating _httpClient.DefaultRequestHeaders
+        // here races with every other concurrent call sharing the same HttpClient.
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/mods/details");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
-
-        var response = await _httpClient.GetAsync("/api/v1/mods/details").ConfigureAwait(false);
+        var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
@@ -899,13 +942,12 @@ public class ApiProcedures
         Debug.WriteLine("Calling GetOptionalMods()");
 #endif
         Debug.Write("Load profiles: ");
-        if (_httpClient.DefaultRequestHeaders.TryGetValues("Authorization", out _))
-            _httpClient.DefaultRequestHeaders.Remove("Authorization");
+        // Authorization set on this request only — mutating _httpClient.DefaultRequestHeaders
+        // here races with every other concurrent call sharing the same HttpClient.
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/profiles/{profileName}/mods/optionals");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
-
-        var response = await _httpClient.GetAsync($"/api/v1/profiles/{profileName}/mods/optionals")
-            .ConfigureAwait(false);
+        var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 

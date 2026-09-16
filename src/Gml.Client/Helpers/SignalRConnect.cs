@@ -33,15 +33,16 @@ public class SignalRConnect : IDisposable, IAsyncDisposable
         _ = DisposeAsync();
     }
 
-    private string BuildHubUrl()
-    {
-        return $"{_address}?access_token={_launcherUser.AccessToken}";
-    }
-
     public async Task BuildAndConnect()
     {
         _hubConnection = new HubConnectionBuilder()
-            .WithUrl(BuildHubUrl())
+            .WithUrl(_address, options =>
+            {
+                // AccessTokenProvider sends the token as an Authorization header on the
+                // connection handshake instead of a ?access_token= query parameter, which
+                // would otherwise land in logs/proxies/OS history.
+                options.AccessTokenProvider = () => Task.FromResult<string?>(_launcherUser.AccessToken);
+            })
             .WithAutomaticReconnect()
             .Build();
         await Connect();
