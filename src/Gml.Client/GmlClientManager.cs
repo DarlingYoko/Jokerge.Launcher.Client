@@ -229,7 +229,7 @@ public class GmlClientManager : IGmlClientManager
 
         if (tempFile.Exists)
         {
-            LauncherUpdater.Start(osType, tempFile.FullName, true);
+            LauncherUpdater.FileReplaceAndRestart(osType, tempFile.FullName, originalFileName);
             return;
         }
 
