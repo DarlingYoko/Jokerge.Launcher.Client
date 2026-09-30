@@ -35,11 +35,13 @@ public class HashValidationDecorator : IFileUpdateHandler
         // execution you'd get from `Task.WhenAll` over async lambdas with no actual awaits inside.
         await Task.Run(() => Parallel.ForEach(files, serverFile =>
         {
-            filesToDelete.TryGetValue(SystemIoProcedures.NormalizePath(serverFile.Directory), out var localFile);
+            var localKey = ResolveLocalKey(rootDirectory, serverFile);
+
+            filesToDelete.TryGetValue(localKey, out var localFile);
 
             if (localFile is null)
             {
-                var localPath = Path.Combine(rootDirectory, SystemIoProcedures.NormalizePath(serverFile.Directory));
+                var localPath = Path.Combine(rootDirectory, localKey);
 
                 if (File.Exists(localPath))
                 {
@@ -72,7 +74,7 @@ public class HashValidationDecorator : IFileUpdateHandler
             else if (localFile.Size == serverFile.Size)
             {
                 // Размеры совпадают - проверяем хеш
-                var normalizedDirectory = SystemIoProcedures.NormalizePath(serverFile.Directory);
+                var normalizedDirectory = localKey;
                 var localPath = Path.Combine(rootDirectory, normalizedDirectory);
                 var skipHashCheck = localPath.StartsWith(Path.Combine(rootDirectory, "assets"));
 
@@ -96,19 +98,19 @@ public class HashValidationDecorator : IFileUpdateHandler
                 if (!hashMatches)
                 {
                     filesToUpdate.Add(serverFile);
-                    filesToDelete.TryRemove(SystemIoProcedures.NormalizePath(localFile.Directory), out _);
+                    filesToDelete.TryRemove(localKey, out _);
                 }
                 else
                 {
                     // Файл актуален - исключаем из списка на удаление
-                    filesToDelete.TryRemove(SystemIoProcedures.NormalizePath(localFile.Directory), out _);
+                    filesToDelete.TryRemove(localKey, out _);
                 }
             }
             else
             {
                 // Размеры не совпадают - нужно обновить
                 filesToUpdate.Add(serverFile);
-                filesToDelete.TryRemove(SystemIoProcedures.NormalizePath(localFile.Directory), out _);
+                filesToDelete.TryRemove(localKey, out _);
             }
         }));
 
@@ -117,5 +119,22 @@ public class HashValidationDecorator : IFileUpdateHandler
         result.FilesToUpdate = filesToUpdate;
         result.FilesToDelete = filesToDelete.Values;
         return result;
+    }
+
+    /// <summary>
+    /// Ключ локального файла для серверной записи. Выключенный опциональный мод лежит на диске как
+    /// "*.jar.disabled" (см. ApiProcedures.ToggleOptionalMod), поэтому его нужно сверять и не удалять
+    /// под этим именем, иначе он удаляется и скачивается заново при каждом запуске.
+    /// </summary>
+    private static string ResolveLocalKey(string rootDirectory, ProfileFileReadDto serverFile)
+    {
+        var key = SystemIoProcedures.NormalizePath(serverFile.Directory);
+
+        if (!ApiProcedures.IsOptionalMod(key)) return key;
+
+        var enabledPath = Path.Combine(rootDirectory, key);
+        var disabledPath = enabledPath + ".disabled";
+
+        return !File.Exists(enabledPath) && File.Exists(disabledPath) ? key + ".disabled" : key;
     }
 }
