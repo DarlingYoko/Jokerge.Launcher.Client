@@ -9,6 +9,9 @@ public interface IGameLoader
 {
     IGmlClientManager Manager { get; set; }
     IObservable<Process> GameLaunched { get; }
+
+    /// <summary>Lines the game process writes to stdout and stderr.</summary>
+    IObservable<string> GameOutput { get; }
     Task StartGameAsync(ResponseMessage<ProfileReadInfoDto?>? profileInfo, bool isOnline);
     void ForceStop();
 }

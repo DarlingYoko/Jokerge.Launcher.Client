@@ -113,7 +113,7 @@ public class GmlClientManager : IGmlClientManager
     public bool SkipUpdate { get; set; }
 
     [Obsolete("Use method with accessToken")]
-    public Task<ResponseMessage<List<ProfileReadDto>>> GetProfiles()
+    public Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles()
     {
         return _apiProcedures.GetProfiles();
     }
@@ -148,12 +148,12 @@ public class GmlClientManager : IGmlClientManager
         return true;
     }
 
-    public Task<ResponseMessage<List<ProfileReadDto>>> GetProfiles(string accessToken)
+    public Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles(string accessToken)
     {
         return _apiProcedures.GetProfiles(accessToken, _offlineProfilesDirectory);
     }
 
-    public async Task<ResponseMessage<List<ProfileReadDto>>> GetOfflineProfiles()
+    public async Task<ResponseMessage<List<LauncherProfileReadDto>>> GetOfflineProfiles()
     {
 #if DEBUG
         Debug.WriteLine("Calling GetProfilesOffline()");
@@ -162,9 +162,9 @@ public class GmlClientManager : IGmlClientManager
         {
             string? content = await _apiProcedures.ReadJsonResponse(_offlineProfilesDirectory, "profiles");
 
-            if (content == null) { return new ResponseMessage<List<ProfileReadDto>>(); }
+            if (content == null) { return new ResponseMessage<List<LauncherProfileReadDto>>(); }
 
-            var result = JsonConvert.DeserializeObject<ResponseMessage<List<ProfileReadDto>>>(content);
+            var result = JsonConvert.DeserializeObject<ResponseMessage<List<LauncherProfileReadDto>>>(content);
 
             if (result?.Data != null)
             {
@@ -176,7 +176,7 @@ public class GmlClientManager : IGmlClientManager
                 }
             }
 
-            return result ?? new ResponseMessage<List<ProfileReadDto>>();
+            return result ?? new ResponseMessage<List<LauncherProfileReadDto>>();
         }
         catch (Exception ex)
         {
@@ -184,7 +184,7 @@ public class GmlClientManager : IGmlClientManager
             Debug.WriteLine($"Error reading or deserializing json: {ex.Message}");
             SentrySdk.CaptureException(ex);
 #endif
-            return new ResponseMessage<List<ProfileReadDto>>();
+            return new ResponseMessage<List<LauncherProfileReadDto>>();
         }
     }
 
@@ -211,6 +211,11 @@ public class GmlClientManager : IGmlClientManager
     public Task UpdateDiscordRpcState(string state)
     {
         return _apiProcedures.UpdateDiscordRpcState(state);
+    }
+
+    public Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage, string? largeImageText)
+    {
+        return _apiProcedures.UpdateDiscordRpcGameState(details, state, largeImage, largeImageText);
     }
 
     public Task<IVersionFile?> GetActualVersion(OsType osType, Architecture osArch)

@@ -24,10 +24,10 @@ public interface IGmlClientManager : IDisposable
     bool SkipUpdate { get; set; }
     Uri HostUri { get; set; }
     IGameLoader Gameloader { get; }
-    Task<ResponseMessage<List<ProfileReadDto>>> GetProfiles();
+    Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles();
     Task<ResponseMessage<List<ModsDetailsInfoDto>>> GetOptionalModsInfo(string accessToken);
-    Task<ResponseMessage<List<ProfileReadDto>>> GetProfiles(string accessToken);
-    Task<ResponseMessage<List<ProfileReadDto>>> GetOfflineProfiles();
+    Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles(string accessToken);
+    Task<ResponseMessage<List<LauncherProfileReadDto>>> GetOfflineProfiles();
     Task<ResponseMessage<ProfileReadInfoDto?>?> GetProfileInfo(ProfileCreateInfoDto profileDto);
     Task<ResponseMessage<ProfileReadInfoDto?>?> GetProfileInfoOffline(ProfileCreateInfoDto profileDto);
     public Task<Process> GetProcess(ProfileReadInfoDto profileDto, OsType osType, bool isOffline = false);
@@ -40,6 +40,12 @@ public interface IGmlClientManager : IDisposable
     Task RemoveProfileFiles(ProfileReadInfoDto profile);
     Task LoadDiscordRpc();
     Task UpdateDiscordRpcState(string state);
+
+    /// <summary>
+    /// In-game presence. Empty <paramref name="largeImage"/>/<paramref name="largeImageText"/> fall back to the
+    /// Discord integration settings.
+    /// </summary>
+    Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage, string? largeImageText);
     Task<IVersionFile?> GetActualVersion(OsType osType, Architecture osArch);
 
     Task UpdateCurrentLauncher((IVersionFile? ActualVersion, bool IsActuallVersion) versionInfo, OsType osType,

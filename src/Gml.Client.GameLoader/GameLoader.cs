@@ -18,7 +18,9 @@ public class GameLoader : IGameLoader
 {
     private ISubject<Process> _gameLaunched = new Subject<Process>();
     private Process? _process;
+    private readonly Subject<string> _gameOutput = new();
     public IObservable<Process> GameLaunched => _gameLaunched.AsObservable();
+    public IObservable<string> GameOutput => _gameOutput.AsObservable();
 
     public Task StartGameAsync(ResponseMessage<ProfileReadInfoDto?>? profileInfo, bool isOnline)
     {
@@ -72,6 +74,7 @@ public class GameLoader : IGameLoader
             if (!string.IsNullOrEmpty(e.Data))
             {
                 Debug.WriteLine(e.Data);
+                _gameOutput.OnNext(e.Data);
                 // _logHandler.ProcessLogs(e.Data);
             }
         };
@@ -84,6 +87,7 @@ public class GameLoader : IGameLoader
             }
 
             Debug.WriteLine(e.Data);
+            _gameOutput.OnNext(e.Data);
 
             // _logHandler.ProcessLogs(e.Data);
         };

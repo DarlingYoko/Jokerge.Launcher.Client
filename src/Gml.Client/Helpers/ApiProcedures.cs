@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 using DiscordRPC;
 using Gml.Client.Interfaces;
 using Gml.Client.Models;
+using Gml.Client.Presence;
 using Gml.Domains.Launcher;
 using Gml.Dto.Files;
 using Gml.Dto.Integration;
@@ -54,7 +55,11 @@ public class ApiProcedures
 
     private readonly ISubject<int> _progressChanged = new Subject<int>();
     private readonly ISubject<long> _downloadedBytesDelta = new Subject<long>();
-    private (DiscordRpcClient? Client, DiscordRpcReadDto? ClientInfo)? _discordRpcClient;
+    private const int MaxImageKeyLength = 256;
+    private (DiscordRpcClient Client, DiscordRpcReadDto Info)? _discordRpcClient;
+    private readonly SemaphoreSlim _discordRpcLock = new(1, 1);
+    private DateTime? _presenceStartedAt;
+    private bool _presenceInGame;
     private int _finishedFilesCount;
     private int _progress;
 
@@ -131,12 +136,12 @@ public class ApiProcedures
     }
 
     [Obsolete("Use method with accessToken")]
-    public Task<ResponseMessage<List<ProfileReadDto>>> GetProfiles()
+    public Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles()
     {
         return GetProfiles(string.Empty);
     }
 
-    public async Task<ResponseMessage<List<ProfileReadDto>>> GetProfiles(string accessToken, string savePath = null)
+    public async Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles(string accessToken, string savePath = null)
     {
 #if DEBUG
         Debug.WriteLine("Calling GetProfiles()");
@@ -158,7 +163,7 @@ public class ApiProcedures
                 Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
                 if (!response.IsSuccessStatusCode)
-                    return new ResponseMessage<List<ProfileReadDto>>();
+                    return new ResponseMessage<List<LauncherProfileReadDto>>();
 
                 var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 #if DEBUG
@@ -169,8 +174,8 @@ public class ApiProcedures
                     SaveJsonResponse(content, savePath, "profiles");
                 }
 
-                return JsonConvert.DeserializeObject<ResponseMessage<List<ProfileReadDto>>>(content)
-                       ?? new ResponseMessage<List<ProfileReadDto>>();
+                return JsonConvert.DeserializeObject<ResponseMessage<List<LauncherProfileReadDto>>>(content)
+                       ?? new ResponseMessage<List<LauncherProfileReadDto>>();
             }
             catch (Exception ex) when (retryCount < maxRetries - 1)
             {
@@ -701,12 +706,12 @@ public class ApiProcedures
         return Task.CompletedTask;
     }
 
-    public Task LoadDiscordRpc()
+    public async Task LoadDiscordRpc()
     {
 #if DEBUG
         Debug.WriteLine("Calling LoadDiscordRpc");
 #endif
-        return GetDiscordRpcClient();
+        await EnsureDiscordRpcClient();
     }
 
     public async Task UpdateDiscordRpcState(string state)
@@ -714,44 +719,87 @@ public class ApiProcedures
 #if DEBUG
         Debug.WriteLine($"Updating Discord RPC State to: {state}");
 #endif
-        _discordRpcClient ??= await GetDiscordRpcClient();
+        if (await EnsureDiscordRpcClient() is not { } rpc)
+            return;
 
-        if (await GetDiscordClient() is { } discordClient)
+        SetPresence(rpc.Client, false, rpc.Info.Details, state, rpc.Info.LargeImageKey, rpc.Info.LargeImageText);
+    }
+
+    public async Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage,
+        string? largeImageText)
+    {
+#if DEBUG
+        Debug.WriteLine($"Updating Discord RPC game state to: {details} / {state}");
+#endif
+        if (await EnsureDiscordRpcClient() is not { } rpc)
+            return;
+
+        SetPresence(rpc.Client, true, details, state,
+            string.IsNullOrWhiteSpace(largeImage) ? rpc.Info.LargeImageKey : largeImage,
+            string.IsNullOrWhiteSpace(largeImageText) ? rpc.Info.LargeImageText : largeImageText);
+    }
+
+    private void SetPresence(DiscordRpcClient client, bool inGame, string? details, string? state,
+        string? largeImageKey, string? largeImageText)
+    {
+        // Elapsed time counts from entering the launcher or the game, not from the last status change.
+        if (_presenceStartedAt is null || _presenceInGame != inGame)
         {
-            _discordRpcClient?.Client?.SetPresence(new RichPresence
+            _presenceStartedAt = DateTime.UtcNow;
+            _presenceInGame = inGame;
+        }
+
+        var info = _discordRpcClient?.Info;
+
+        try
+        {
+            client.SetPresence(new RichPresence
             {
-                Timestamps = Timestamps.Now,
-                Details = discordClient.Details,
-                State = state,
+                Timestamps = new Timestamps(_presenceStartedAt.Value),
+                Details = DiscordText.Fit(details),
+                State = DiscordText.Fit(state),
                 Assets = new Assets
                 {
-                    LargeImageKey = discordClient.LargeImageKey,
-                    LargeImageText = discordClient.LargeImageText,
-                    SmallImageKey = discordClient.SmallImageKey,
-                    SmallImageText = discordClient.SmallImageText
+                    LargeImageKey = DiscordText.Fit(largeImageKey, MaxImageKeyLength),
+                    LargeImageText = DiscordText.Fit(largeImageText),
+                    SmallImageKey = DiscordText.Fit(info?.SmallImageKey, MaxImageKeyLength),
+                    SmallImageText = DiscordText.Fit(info?.SmallImageText)
                 }
             });
 #if DEBUG
             Debug.WriteLine("Discord RPC State updated successfully.");
 #endif
         }
+        catch (Exception exception)
+        {
+            // A bad image key or text from the admin panel must not break launching the game.
+            SentrySdk.CaptureException(exception);
+        }
     }
 
-    private async Task<(DiscordRpcClient? Client, DiscordRpcReadDto? ClientInfo)> GetDiscordRpcClient()
+    private async Task<(DiscordRpcClient Client, DiscordRpcReadDto Info)?> EnsureDiscordRpcClient()
     {
-#if DEBUG
-        Debug.WriteLine("Fetching Discord RPC Client");
-#endif
-        if (_discordRpcClient?.Client is null)
+        if (_discordRpcClient is not null)
+            return _discordRpcClient;
+
+        await _discordRpcLock.WaitAsync().ConfigureAwait(false);
+
+        try
         {
-            var discordClient = await GetDiscordClient();
+            if (_discordRpcClient is not null)
+                return _discordRpcClient;
+
+#if DEBUG
+            Debug.WriteLine("Fetching Discord RPC Client");
+#endif
+            var discordClient = await GetDiscordClient().ConfigureAwait(false);
 
             if (discordClient is null || string.IsNullOrEmpty(discordClient.ClientId))
             {
 #if DEBUG
                 Debug.WriteLine("Failed to retrieve Discord client info or ClientId is empty.");
 #endif
-                return (null, null);
+                return null;
             }
 
             var client = new DiscordRpcClient(discordClient.ClientId);
@@ -760,10 +808,13 @@ public class ApiProcedures
 #if DEBUG
             Debug.WriteLine($"DiscordRPC is initialized: {client.IsInitialized}");
 #endif
-            return (client, discordClient);
+            _discordRpcClient = (client, discordClient);
+            return _discordRpcClient;
         }
-
-        return (null, null);
+        finally
+        {
+            _discordRpcLock.Release();
+        }
     }
 
     public async Task<DiscordRpcReadDto?> GetDiscordClient()
