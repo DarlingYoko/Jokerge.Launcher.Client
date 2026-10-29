@@ -213,9 +213,10 @@ public class GmlClientManager : IGmlClientManager
         return _apiProcedures.UpdateDiscordRpcState(state);
     }
 
-    public Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage, string? largeImageText)
+    public Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage, string? largeImageText,
+        string? playerName = null)
     {
-        return _apiProcedures.UpdateDiscordRpcGameState(details, state, largeImage, largeImageText);
+        return _apiProcedures.UpdateDiscordRpcGameState(details, state, largeImage, largeImageText, playerName);
     }
 
     public Task<IVersionFile?> GetActualVersion(OsType osType, Architecture osArch)

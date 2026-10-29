@@ -56,6 +56,7 @@ public class ApiProcedures
     private readonly ISubject<int> _progressChanged = new Subject<int>();
     private readonly ISubject<long> _downloadedBytesDelta = new Subject<long>();
     private const int MaxImageKeyLength = 256;
+    private const int PlayerHeadSize = 128;
     private (DiscordRpcClient Client, DiscordRpcReadDto Info)? _discordRpcClient;
     private readonly SemaphoreSlim _discordRpcLock = new(1, 1);
     private DateTime? _presenceStartedAt;
@@ -726,7 +727,7 @@ public class ApiProcedures
     }
 
     public async Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage,
-        string? largeImageText)
+        string? largeImageText, string? playerName = null)
     {
 #if DEBUG
         Debug.WriteLine($"Updating Discord RPC game state to: {details} / {state}");
@@ -736,11 +737,12 @@ public class ApiProcedures
 
         SetPresence(rpc.Client, true, details, state,
             string.IsNullOrWhiteSpace(largeImage) ? rpc.Info.LargeImageKey : largeImage,
-            string.IsNullOrWhiteSpace(largeImageText) ? rpc.Info.LargeImageText : largeImageText);
+            string.IsNullOrWhiteSpace(largeImageText) ? rpc.Info.LargeImageText : largeImageText,
+            playerName);
     }
 
     private void SetPresence(DiscordRpcClient client, bool inGame, string? details, string? state,
-        string? largeImageKey, string? largeImageText)
+        string? largeImageKey, string? largeImageText, string? playerName = null)
     {
         // Elapsed time counts from entering the launcher or the game, not from the last status change.
         if (_presenceStartedAt is null || _presenceInGame != inGame)
@@ -750,6 +752,9 @@ public class ApiProcedures
         }
 
         var info = _discordRpcClient?.Info;
+        var playerHead = _httpClient.BaseAddress is { } gateway
+            ? PlayerHeadUrl.Build(gateway, playerName, PlayerHeadSize)
+            : null;
 
         try
         {
@@ -762,8 +767,8 @@ public class ApiProcedures
                 {
                     LargeImageKey = DiscordText.Fit(largeImageKey, MaxImageKeyLength),
                     LargeImageText = DiscordText.Fit(largeImageText),
-                    SmallImageKey = DiscordText.Fit(info?.SmallImageKey, MaxImageKeyLength),
-                    SmallImageText = DiscordText.Fit(info?.SmallImageText)
+                    SmallImageKey = DiscordText.Fit(playerHead ?? info?.SmallImageKey, MaxImageKeyLength),
+                    SmallImageText = DiscordText.Fit(playerHead is null ? info?.SmallImageText : playerName)
                 }
             });
 #if DEBUG

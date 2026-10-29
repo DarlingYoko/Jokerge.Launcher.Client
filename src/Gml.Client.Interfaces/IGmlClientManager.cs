@@ -43,9 +43,11 @@ public interface IGmlClientManager : IDisposable
 
     /// <summary>
     /// In-game presence. Empty <paramref name="largeImage"/>/<paramref name="largeImageText"/> fall back to the
-    /// Discord integration settings.
+    /// Discord integration settings. A <paramref name="playerName"/> adds the player's skin head as the small
+    /// image; without it (or when the head can't be reached by Discord) the integration's small image is used.
     /// </summary>
-    Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage, string? largeImageText);
+    Task UpdateDiscordRpcGameState(string details, string? state, string? largeImage, string? largeImageText,
+        string? playerName = null);
     Task<IVersionFile?> GetActualVersion(OsType osType, Architecture osArch);
 
     Task UpdateCurrentLauncher((IVersionFile? ActualVersion, bool IsActuallVersion) versionInfo, OsType osType,
