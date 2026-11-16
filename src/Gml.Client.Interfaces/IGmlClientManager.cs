@@ -23,6 +23,9 @@ public interface IGmlClientManager : IDisposable
     string InstallationDirectory { get; }
     bool SkipUpdate { get; set; }
     Uri HostUri { get; set; }
+
+    /// <summary>Switches API calls, downloads and game URLs to another address of the same backend.</summary>
+    void ChangeGateway(Uri gateway);
     IGameLoader Gameloader { get; }
     Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles();
     Task<ResponseMessage<List<ModsDetailsInfoDto>>> GetOptionalModsInfo(string accessToken);

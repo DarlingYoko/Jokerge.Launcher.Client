@@ -1049,19 +1049,24 @@ public class ApiProcedures
                ?? new ResponseMessage<List<NewsReadDto>>();
     }
 
-    public static async Task<bool> CheckBackend(string hostUrl)
+    public static Task<bool> CheckBackend(string hostUrl)
+    {
+        // Bounded so an unreachable/slow backend can't stall app startup for the default 100s
+        // HttpClient timeout — this runs synchronously (via .Result) before the main window appears.
+        return CheckBackend(hostUrl, TimeSpan.FromSeconds(8), CancellationToken.None);
+    }
+
+    public static async Task<bool> CheckBackend(string hostUrl, TimeSpan timeout, CancellationToken cancellationToken)
     {
 #if DEBUG
         Debug.WriteLine("Calling CheckBackend()");
 #endif
-        // Bounded so an unreachable/slow backend can't stall app startup for the default 100s
-        // HttpClient timeout — this runs synchronously (via .Result) before the main window appears.
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-        var response = await client.GetAsync($"{hostUrl}").ConfigureAwait(false);
+        using var client = new HttpClient { Timeout = timeout };
+        var response = await client.GetAsync($"{hostUrl}", cancellationToken).ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
-            response = await client.GetAsync($"{hostUrl}/health").ConfigureAwait(false);
+            response = await client.GetAsync($"{hostUrl}/health", cancellationToken).ConfigureAwait(false);
         }
 
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success check" : "Failed check");

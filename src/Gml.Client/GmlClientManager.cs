@@ -12,6 +12,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.NetworkInformation;
+using System.Reactive.Disposables;
 using System.Reactive.Subjects;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
@@ -35,14 +36,15 @@ public class GmlClientManager : IGmlClientManager
     // headroom for other players behind the same NAT/IP and avoids saturating the connection pool.
     private const int MaxConcurrentDownloads = 16;
 
-    private readonly ApiProcedures _apiProcedures;
+    private ApiProcedures _apiProcedures;
+    private IDisposable? _apiProceduresSubscriptions;
     private readonly ISubject<int> _loadedFilesCount = new Subject<int>();
     private readonly ISubject<int> _maxFileCount = new Subject<int>();
     private readonly OsType _osType;
     private readonly ISubject<bool> _profilesChanged = new Subject<bool>();
     private readonly ISubject<int> _progressChanged = new Subject<int>();
     private readonly ISubject<FileSyncResult> _filesSynced = new Subject<FileSyncResult>();
-    private readonly string _webSocketAddress;
+    private string _webSocketAddress = string.Empty;
     private readonly string _offlineProfilesDirectory;
 
     private SignalRConnect? _launchBackendConnection;
@@ -55,12 +57,37 @@ public class GmlClientManager : IGmlClientManager
         InstallationDirectory = installationDirectory;
         Gameloader = gameLoader;
         Gameloader.Manager = this;
-        HostUri = new Uri(gateWay);
-
         _osType = osType;
         _systemProcedures = new SystemIoProcedures(installationDirectory, osType);
         _offlineProfilesDirectory = Path.Combine(InstallationDirectory, "offline-mode");
+        ProjectName = projectName;
 
+        HostUri = new Uri(gateWay);
+        _apiProcedures = CreateApiProcedures(HostUri, osType);
+        BindApiProcedures();
+    }
+
+    /// <summary>
+    /// Points every later request at another published address of the same backend: API calls,
+    /// file downloads, the SignalR socket and the URLs handed to the game (authlib endpoint, skins).
+    /// Meant for the launcher's startup check, before anything has subscribed to
+    /// <see cref="DownloadedBytesDelta"/> or opened the launcher socket; those keep the old address.
+    /// </summary>
+    public void ChangeGateway(Uri gateway)
+    {
+        HostUri = gateway;
+        _apiProcedures = CreateApiProcedures(gateway, _osType);
+        BindApiProcedures();
+    }
+
+    public static string BuildWebSocketAddress(Uri gateway)
+    {
+        var scheme = gateway.Scheme == Uri.UriSchemeHttps ? "wss" : "ws";
+        return scheme + "://" + gateway.Host + (gateway.IsDefaultPort ? "" : ":" + gateway.Port);
+    }
+
+    private static ApiProcedures CreateApiProcedures(Uri gateway, OsType osType)
+    {
 #if NET8_0_OR_GREATER
         // Without this, pooled connections are reused indefinitely as long as they *look* alive.
         // An intermediary (reverse proxy, NAT, firewall) that silently drops an idle connection
@@ -74,27 +101,27 @@ public class GmlClientManager : IGmlClientManager
             PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60)
         })
         {
-            BaseAddress = HostUri
+            BaseAddress = gateway
         };
 #else
         var httpClient = new HttpClient
         {
-            BaseAddress = HostUri
+            BaseAddress = gateway
         };
 #endif
 
-        _apiProcedures = new ApiProcedures(httpClient, osType);
+        return new ApiProcedures(httpClient, osType);
+    }
 
-        _apiProcedures.ProgressChanged.Subscribe(_progressChanged);
-        _apiProcedures.LoadedFilesCount.Subscribe(_loadedFilesCount);
-        _apiProcedures.MaxFileCount.Subscribe(_maxFileCount);
+    private void BindApiProcedures()
+    {
+        _apiProceduresSubscriptions?.Dispose();
+        _apiProceduresSubscriptions = new CompositeDisposable(
+            _apiProcedures.ProgressChanged.Subscribe(_progressChanged),
+            _apiProcedures.LoadedFilesCount.Subscribe(_loadedFilesCount),
+            _apiProcedures.MaxFileCount.Subscribe(_maxFileCount));
 
-        ProjectName = projectName;
-
-        if (HostUri.Scheme == Uri.UriSchemeHttps)
-            _webSocketAddress = "wss://" + HostUri.Host + (HostUri.IsDefaultPort ? "" : ":" + HostUri.Port);
-        else if (HostUri.Scheme == Uri.UriSchemeHttp)
-            _webSocketAddress = "ws://" + HostUri.Host + (HostUri.IsDefaultPort ? "" : ":" + HostUri.Port);
+        _webSocketAddress = BuildWebSocketAddress(HostUri);
     }
 
     public Uri HostUri { get; set; }
@@ -455,6 +482,11 @@ public class GmlClientManager : IGmlClientManager
     public static Task<bool> CheckApiAsync(string hostUrl)
     {
         return ApiProcedures.CheckBackend(hostUrl);
+    }
+
+    public static Task<bool> CheckApiAsync(string hostUrl, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        return ApiProcedures.CheckBackend(hostUrl, timeout, cancellationToken);
     }
 
     public static string CheckApiStatus(params string[] hosts)
