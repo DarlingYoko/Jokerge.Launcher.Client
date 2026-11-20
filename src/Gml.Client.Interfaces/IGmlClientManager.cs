@@ -65,5 +65,5 @@ public interface IGmlClientManager : IDisposable
     Task DownloadFiles(ProfileFileReadDto[] profileInfo,
         CancellationToken cancellationToken = default);
 
-    Task<ResponseMessage<List<NewsReadDto>>> GetNews();
+    Task<ResponseMessage<List<NewsReadDto>>> GetNews(string accessToken);
 }

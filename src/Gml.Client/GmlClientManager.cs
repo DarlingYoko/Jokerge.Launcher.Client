@@ -150,9 +150,9 @@ public class GmlClientManager : IGmlClientManager
         return _apiProcedures.GetOptionalModsInfo(accessToken);
     }
 
-    public Task<ResponseMessage<List<NewsReadDto>>> GetNews()
+    public Task<ResponseMessage<List<NewsReadDto>>> GetNews(string accessToken)
     {
-        return _apiProcedures.GetNews();
+        return _apiProcedures.GetNews(accessToken);
     }
 
     public Task<ResponseMessage<List<ModReadDto>>> GetOptionalMods(string profileName, string accessToken)

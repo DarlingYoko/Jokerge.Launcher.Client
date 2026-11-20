@@ -1025,14 +1025,18 @@ public class ApiProcedures
         return isEnabled ? localPath.Replace(".disabled", string.Empty) : $"{localPath}.disabled";
     }
 
-    public async Task<ResponseMessage<List<NewsReadDto>>> GetNews()
+    public async Task<ResponseMessage<List<NewsReadDto>>> GetNews(string accessToken)
     {
 #if DEBUG
         Debug.WriteLine("Calling GetNews()");
 #endif
 
-        var response = await _httpClient.GetAsync($"/api/v1/integrations/news/list")
-            .ConfigureAwait(false);
+        // The news list requires the player's token (integrations.news.view). Authorization is
+        // set on this request only, like the other calls sharing _httpClient.
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/integrations/news/list");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
