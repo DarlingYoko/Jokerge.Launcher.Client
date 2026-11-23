@@ -28,7 +28,7 @@ public interface IGmlClientManager : IDisposable
     void ChangeGateway(Uri gateway);
     IGameLoader Gameloader { get; }
     Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles();
-    Task<ResponseMessage<List<ModsDetailsInfoDto>>> GetOptionalModsInfo(string accessToken);
+    Task<ResponseMessage<List<OptionalModDetailsDto>>> GetOptionalModsInfo(string accessToken);
     Task<ResponseMessage<List<LauncherProfileReadDto>>> GetProfiles(string accessToken);
     Task<ResponseMessage<List<LauncherProfileReadDto>>> GetOfflineProfiles();
     Task<ResponseMessage<ProfileReadInfoDto?>?> GetProfileInfo(ProfileCreateInfoDto profileDto);

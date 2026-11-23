@@ -145,7 +145,7 @@ public class GmlClientManager : IGmlClientManager
         return _apiProcedures.GetProfiles();
     }
 
-    public Task<ResponseMessage<List<ModsDetailsInfoDto>>> GetOptionalModsInfo(string accessToken)
+    public Task<ResponseMessage<List<OptionalModDetailsDto>>> GetOptionalModsInfo(string accessToken)
     {
         return _apiProcedures.GetOptionalModsInfo(accessToken);
     }

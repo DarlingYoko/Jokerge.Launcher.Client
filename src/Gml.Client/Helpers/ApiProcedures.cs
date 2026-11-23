@@ -964,7 +964,7 @@ public partial class ApiProcedures
         return versionBuilder.ToString();
     }
 
-    public async Task<ResponseMessage<List<ModsDetailsInfoDto>>> GetOptionalModsInfo(string accessToken)
+    public async Task<ResponseMessage<List<OptionalModDetailsDto>>> GetOptionalModsInfo(string accessToken)
     {
 #if DEBUG
         Debug.WriteLine("Calling GetOptionalMods()");
@@ -980,7 +980,7 @@ public partial class ApiProcedures
         Debug.WriteLine(response.IsSuccessStatusCode ? "Success load" : "Failed load");
 
         if (!response.IsSuccessStatusCode)
-            return new ResponseMessage<List<ModsDetailsInfoDto>>();
+            return new ResponseMessage<List<OptionalModDetailsDto>>();
 
         var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 #if DEBUG
@@ -988,8 +988,8 @@ public partial class ApiProcedures
             ? $"Mods loaded successfully: {content}"
             : "Failed to load profiles.");
 #endif
-        return JsonConvert.DeserializeObject<ResponseMessage<List<ModsDetailsInfoDto>>>(content)
-               ?? new ResponseMessage<List<ModsDetailsInfoDto>>();
+        return JsonConvert.DeserializeObject<ResponseMessage<List<OptionalModDetailsDto>>>(content)
+               ?? new ResponseMessage<List<OptionalModDetailsDto>>();
     }
 
     public async Task<ResponseMessage<List<ModReadDto>>> GetOptionalMods(string profileName, string accessToken)
