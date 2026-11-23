@@ -66,4 +66,10 @@ public interface IGmlClientManager : IDisposable
         CancellationToken cancellationToken = default);
 
     Task<ResponseMessage<List<NewsReadDto>>> GetNews(string accessToken);
+
+    /// <summary>
+    /// Entry points to the profile's game server, main address first. <c>Data</c> is empty when the profile has
+    /// no servers and <c>null</c> when the routes could not be loaded; never throws for a failed request.
+    /// </summary>
+    Task<ResponseMessage<List<ServerRouteDto>>> GetServerRoutes(string profileName, string accessToken);
 }

@@ -34,7 +34,7 @@ using Sentry;
 
 namespace Gml.Client.Helpers;
 
-public class ApiProcedures
+public partial class ApiProcedures
 {
     // Must match AuthIntegrationHandler's header name in Jokerge.Api — signals "2FA code required"
     // without relying on matching the (localized) error message text.

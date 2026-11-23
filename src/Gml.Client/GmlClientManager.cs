@@ -155,6 +155,11 @@ public class GmlClientManager : IGmlClientManager
         return _apiProcedures.GetNews(accessToken);
     }
 
+    public Task<ResponseMessage<List<ServerRouteDto>>> GetServerRoutes(string profileName, string accessToken)
+    {
+        return _apiProcedures.GetServerRoutes(profileName, accessToken);
+    }
+
     public Task<ResponseMessage<List<ModReadDto>>> GetOptionalMods(string profileName, string accessToken)
     {
         return _apiProcedures.GetOptionalMods(profileName, accessToken);
